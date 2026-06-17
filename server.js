@@ -156,13 +156,17 @@ app.post("/generate-image", async (req, res) => {
     console.log("=== GENERATE IMAGE CALLED ===");
     console.log("Prompt:", prompt ? prompt.slice(0,100) : "MISSING");
     console.log("OPENAI_API_KEY present:", !!process.env.OPENAI_API_KEY);
-    console.log("OPENAI_API_KEY length:", process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.length : 0);
 
     if (!prompt) return res.status(400).json({ error: "prompt manquant" });
     if (!process.env.OPENAI_API_KEY) {
       console.log("ERROR: OPENAI_API_KEY not set");
       return res.status(500).json({ error: "OPENAI_API_KEY non configuree sur Railway" });
     }
+
+    // Map requested size to a gpt-image-1 supported size
+    let imgSize = "1024x1024";
+    if (size === "1024x1792") imgSize = "1024x1536";
+    else if (size === "1792x1024") imgSize = "1536x1024";
 
     const response = await fetch("https://api.openai.com/v1/images/generations", {
       method: "POST",
@@ -171,25 +175,38 @@ app.post("/generate-image", async (req, res) => {
         "Authorization": "Bearer " + process.env.OPENAI_API_KEY
       },
       body: JSON.stringify({
-        model: "dall-e-3",
+        model: "gpt-image-1",
         prompt: prompt,
         n: 1,
-        size: size || "1024x1792",
-        quality: "hd"
+        size: imgSize,
+        quality: "high"
       })
     });
 
     console.log("OpenAI response status:", response.status);
     const data = await response.json();
-    console.log("OpenAI response data:", JSON.stringify(data).slice(0,300));
+    console.log("OpenAI response keys:", JSON.stringify(Object.keys(data)));
 
     if (data.error) {
       console.log("OpenAI ERROR:", data.error.message);
       return res.status(500).json({ error: data.error.message });
     }
 
-    console.log("SUCCESS - image URL generated");
-    res.json({ url: data.data[0].url });
+    var imgItem = data.data[0];
+    var imgUrl = null;
+    if (imgItem.url) {
+      imgUrl = imgItem.url;
+    } else if (imgItem.b64_json) {
+      imgUrl = "data:image/png;base64," + imgItem.b64_json;
+    }
+
+    if (!imgUrl) {
+      console.log("ERROR: no url or b64_json in response");
+      return res.status(500).json({ error: "Pas d image dans la reponse" });
+    }
+
+    console.log("SUCCESS - image generated");
+    res.json({ url: imgUrl });
 
   } catch (err) {
     console.log("CATCH ERROR:", err.message);
