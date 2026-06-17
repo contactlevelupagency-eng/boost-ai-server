@@ -153,7 +153,16 @@ app.post("/chat", async (req, res) => {
 app.post("/generate-image", async (req, res) => {
   try {
     const { prompt, size } = req.body;
+    console.log("=== GENERATE IMAGE CALLED ===");
+    console.log("Prompt:", prompt ? prompt.slice(0,100) : "MISSING");
+    console.log("OPENAI_API_KEY present:", !!process.env.OPENAI_API_KEY);
+    console.log("OPENAI_API_KEY length:", process.env.OPENAI_API_KEY ? process.env.OPENAI_API_KEY.length : 0);
+
     if (!prompt) return res.status(400).json({ error: "prompt manquant" });
+    if (!process.env.OPENAI_API_KEY) {
+      console.log("ERROR: OPENAI_API_KEY not set");
+      return res.status(500).json({ error: "OPENAI_API_KEY non configuree sur Railway" });
+    }
 
     const response = await fetch("https://api.openai.com/v1/images/generations", {
       method: "POST",
@@ -170,12 +179,20 @@ app.post("/generate-image", async (req, res) => {
       })
     });
 
+    console.log("OpenAI response status:", response.status);
     const data = await response.json();
-    if (data.error) return res.status(500).json({ error: data.error.message });
+    console.log("OpenAI response data:", JSON.stringify(data).slice(0,300));
 
+    if (data.error) {
+      console.log("OpenAI ERROR:", data.error.message);
+      return res.status(500).json({ error: data.error.message });
+    }
+
+    console.log("SUCCESS - image URL generated");
     res.json({ url: data.data[0].url });
 
   } catch (err) {
+    console.log("CATCH ERROR:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
