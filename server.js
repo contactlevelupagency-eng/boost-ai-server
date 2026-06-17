@@ -1,5 +1,95 @@
 const express = require("express");
+const crypto = require("crypto");
+const fs = require("fs");
 const app = express();
+
+// File-based token storage (survives server restarts, unlike in-memory storage)
+const TOKENS_FILE = "/app/data/tokens.json";
+
+function loadTokens() {
+  try {
+    if (fs.existsSync(TOKENS_FILE)) {
+      return JSON.parse(fs.readFileSync(TOKENS_FILE, "utf8"));
+    }
+  } catch (e) {
+    console.log("Error loading tokens file:", e.message);
+  }
+  return {};
+}
+
+function saveTokens(tokens) {
+  try {
+    const dir = require("path").dirname(TOKENS_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(TOKENS_FILE, JSON.stringify(tokens, null, 2));
+  } catch (e) {
+    console.log("Error saving tokens file:", e.message);
+  }
+}
+
+// Stripe webhook needs raw body for signature verification - must come BEFORE express.json()
+app.post("/stripe-webhook", express.raw({ type: "application/json" }), async (req, res) => {
+  const sig = req.headers["stripe-signature"];
+  let event;
+
+  try {
+    event = verifyStripeSignature(req.body, sig, process.env.STRIPE_WEBHOOK_SECRET);
+  } catch (err) {
+    console.log("Webhook signature verification failed:", err.message);
+    return res.status(400).send("Webhook Error: " + err.message);
+  }
+
+  console.log("Stripe event received:", event.type);
+
+  if (event.type === "checkout.session.completed") {
+    const session = event.data.object;
+    const email = session.customer_details ? session.customer_details.email : null;
+    const amountTotal = session.amount_total; // in cents
+
+    // Determine plan from amount paid (19.90 / 29.90 / 39.90 EUR)
+    let plan = "pro";
+    if (amountTotal === 1990) plan = "starter";
+    else if (amountTotal === 2990) plan = "pro";
+    else if (amountTotal === 3990) plan = "unlimited";
+
+    const token = crypto.randomBytes(24).toString("hex");
+    const tokens = loadTokens();
+    tokens[token] = { plan, email, createdAt: Date.now() };
+    saveTokens(tokens);
+
+    console.log("New token created for plan:", plan, "email:", email);
+
+    // TODO: send email to client with their access link containing the token
+    // For MVP, the redirect URL is logged here; later this can be sent via email service
+    console.log("Access URL: https://YOUR-NETLIFY-SITE/merci.html?token=" + token + "&plan=" + plan);
+  }
+
+  res.json({ received: true });
+});
+
+function verifyStripeSignature(payload, sigHeader, secret) {
+  if (!sigHeader) throw new Error("No signature header");
+  const parts = sigHeader.split(",").reduce((acc, part) => {
+    const [k, v] = part.split("=");
+    acc[k] = v;
+    return acc;
+  }, {});
+  const signedPayload = parts.t + "." + payload.toString();
+  const expectedSig = crypto.createHmac("sha256", secret).update(signedPayload).digest("hex");
+  if (expectedSig !== parts.v1) throw new Error("Signature mismatch");
+  return JSON.parse(payload.toString());
+}
+
+app.get("/verify-token", (req, res) => {
+  const { token } = req.query;
+  const tokens = loadTokens();
+  if (!token || !tokens[token]) {
+    return res.status(404).json({ valid: false });
+  }
+  res.json({ valid: true, plan: tokens[token].plan, email: tokens[token].email });
+});
 
 app.use(express.json({ limit: "10mb" }));
 
