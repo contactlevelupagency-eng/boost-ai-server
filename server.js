@@ -61,9 +61,39 @@ app.post("/stripe-webhook", express.raw({ type: "application/json" }), async (re
 
     console.log("New token created for plan:", plan, "email:", email);
 
-    // TODO: send email to client with their access link containing the token
-    // For MVP, the redirect URL is logged here; later this can be sent via email service
-    console.log("Access URL: https://YOUR-NETLIFY-SITE/merci.html?token=" + token + "&plan=" + plan);
+    const accessUrl = "https://boost-ai.fr/merci.html?token=" + token + "&plan=" + plan;
+    console.log("Access URL:", accessUrl);
+
+    if (email && process.env.RESEND_API_KEY) {
+      try {
+        const planLabel = plan === "starter" ? "Starter" : plan === "unlimited" ? "Illimite" : "Pro";
+        const emailRes = await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + process.env.RESEND_API_KEY
+          },
+          body: JSON.stringify({
+            from: "BOOST AI <onboarding@resend.dev>",
+            to: email,
+            subject: "Votre acces BOOST AI est pret !",
+            html: "<div style='font-family:sans-serif;max-width:480px;margin:0 auto;padding:30px;'>"
+              + "<h1 style='color:#7c3aed;'>Bienvenue dans BOOST AI !</h1>"
+              + "<p>Merci pour votre abonnement au plan <strong>" + planLabel + "</strong>.</p>"
+              + "<p>Cliquez sur le bouton ci-dessous pour acceder a votre equipe d'experts IA :</p>"
+              + "<a href='" + accessUrl + "' style='display:inline-block;background:#7c3aed;color:white;padding:14px 28px;border-radius:10px;text-decoration:none;font-weight:700;margin:20px 0;'>Acceder a mon equipe</a>"
+              + "<p style='color:#888;font-size:13px;'>Gardez cet email, ce lien vous permet d acceder a votre compte a tout moment.</p>"
+              + "</div>"
+          })
+        });
+        const emailData = await emailRes.json();
+        console.log("Email send status:", emailRes.status, JSON.stringify(emailData).slice(0,200));
+      } catch (emailErr) {
+        console.log("Email sending error:", emailErr.message);
+      }
+    } else {
+      console.log("Email not sent - missing email address or RESEND_API_KEY");
+    }
   }
 
   res.json({ received: true });
