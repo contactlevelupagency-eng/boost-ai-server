@@ -48,11 +48,14 @@ app.post("/stripe-webhook", express.raw({ type: "application/json" }), async (re
     const email = session.customer_details ? session.customer_details.email : null;
     const amountTotal = session.amount_total; // in cents
 
-    // Determine plan from amount paid (19.90 / 29.90 / 39.90 EUR)
+    // Determine plan from amount paid - covers both monthly and yearly billing
     let plan = "pro";
-    if (amountTotal === 1990) plan = "starter";
-    else if (amountTotal === 2990) plan = "pro";
-    else if (amountTotal === 3990) plan = "unlimited";
+    if (amountTotal === 1990) plan = "starter";       // 19.90 EUR monthly
+    else if (amountTotal === 2990) plan = "pro";       // 29.90 EUR monthly
+    else if (amountTotal === 3990) plan = "unlimited"; // 39.90 EUR monthly
+    else if (amountTotal === 19104) plan = "starter";  // 191.04 EUR yearly
+    else if (amountTotal === 28704) plan = "pro";      // 287.04 EUR yearly
+    else if (amountTotal === 38304) plan = "unlimited";// 383.04 EUR yearly
 
     const token = crypto.randomBytes(24).toString("hex");
     const tokens = loadTokens();
