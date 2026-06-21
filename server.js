@@ -159,15 +159,17 @@ app.get("/verify-token", (req, res) => {
 
 app.use(express.json({ limit: "10mb" }));
 
-const ANTOINE_LIMITS = { starter: 8, pro: 20, unlimited: 50 };
+const EXPERT_LIMITS = {
+  antoine: { starter: 8, pro: 20, unlimited: 50 },
+  theo: { starter: 8, pro: 20, unlimited: 50 }
+};
 
 function getMonthKey() {
   const d = new Date();
   return d.getFullYear() + "-" + (d.getMonth() + 1);
 }
 
-// Check current Antoine usage for a token, resetting automatically each month
-app.get("/antoine-usage", (req, res) => {
+function checkUsage(req, res, expertKey, usageField) {
   const { token } = req.query;
   const tokens = loadTokens();
   const entry = tokens[token];
@@ -177,17 +179,16 @@ app.get("/antoine-usage", (req, res) => {
   }
 
   const mk = getMonthKey();
-  if (!entry.usage || entry.usage.month !== mk) {
-    entry.usage = { month: mk, count: 0 };
+  if (!entry[usageField] || entry[usageField].month !== mk) {
+    entry[usageField] = { month: mk, count: 0 };
     saveTokens(tokens);
   }
 
-  const limit = ANTOINE_LIMITS[entry.plan] || ANTOINE_LIMITS.pro;
-  res.json({ count: entry.usage.count, limit, limitReached: entry.usage.count >= limit });
-});
+  const limit = EXPERT_LIMITS[expertKey][entry.plan] || EXPERT_LIMITS[expertKey].pro;
+  res.json({ count: entry[usageField].count, limit, limitReached: entry[usageField].count >= limit });
+}
 
-// Increment Antoine usage for a token (called after a successful new creation, not on iterations)
-app.post("/antoine-usage", (req, res) => {
+function incrUsage(req, res, expertKey, usageField) {
   const { token } = req.body;
   const tokens = loadTokens();
   const entry = tokens[token];
@@ -197,19 +198,27 @@ app.post("/antoine-usage", (req, res) => {
   }
 
   const mk = getMonthKey();
-  if (!entry.usage || entry.usage.month !== mk) {
-    entry.usage = { month: mk, count: 0 };
+  if (!entry[usageField] || entry[usageField].month !== mk) {
+    entry[usageField] = { month: mk, count: 0 };
   }
 
-  const limit = ANTOINE_LIMITS[entry.plan] || ANTOINE_LIMITS.pro;
-  if (entry.usage.count >= limit) {
-    return res.status(403).json({ error: "limit_reached", count: entry.usage.count, limit });
+  const limit = EXPERT_LIMITS[expertKey][entry.plan] || EXPERT_LIMITS[expertKey].pro;
+  if (entry[usageField].count >= limit) {
+    return res.status(403).json({ error: "limit_reached", count: entry[usageField].count, limit });
   }
 
-  entry.usage.count += 1;
+  entry[usageField].count += 1;
   saveTokens(tokens);
-  res.json({ count: entry.usage.count, limit, limitReached: entry.usage.count >= limit });
-});
+  res.json({ count: entry[usageField].count, limit, limitReached: entry[usageField].count >= limit });
+}
+
+// Antoine usage (logos and flyers)
+app.get("/antoine-usage", (req, res) => checkUsage(req, res, "antoine", "usage"));
+app.post("/antoine-usage", (req, res) => incrUsage(req, res, "antoine", "usage"));
+
+// Theo usage (websites)
+app.get("/theo-usage", (req, res) => checkUsage(req, res, "theo", "usageTheo"));
+app.post("/theo-usage", (req, res) => incrUsage(req, res, "theo", "usageTheo"));
 
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
@@ -224,13 +233,7 @@ const SYSTEMS = {
 
         theo: `Tu es Theo, developpeur web senior. Quand on te demande un site, pose D ABORD ces questions : 1. Nom du projet 2. Secteur d activite 3. Couleurs souhaitees 4. Sections voulues 5. Public cible. Ensuite genere le code.
 
-REGLE IMAGES - OBLIGATOIRE, JAMAIS D EXCEPTION :
-Chaque site doit avoir des visuels generes sur mesure par IA, jamais de photos Unsplash generiques.
-Avant le code HTML, decris en ANGLAIS entre [IMAGE_PROMPT_1] et [/IMAGE_PROMPT_1], [IMAGE_PROMPT_2] et [/IMAGE_PROMPT_2] (genere 2 a 3 images selon les besoins du site : hero, section a propos, produit/service) des descriptions de photos professionnelles adaptees au secteur.
-Style impose : professional commercial photography, high quality, 8k, realistic, adapted lighting and composition to the subject.
-Exemple : [IMAGE_PROMPT_1]professional hero photography of a modern coworking space with people working, natural light, minimalist design, commercial photography, 8k[/IMAGE_PROMPT_1]
-Dans le HTML, utilise <img src="GENERATED_IMAGE_1">, <img src="GENERATED_IMAGE_2"> etc a la place du src.
-Limite a 3 images maximum par site pour eviter des delais trop longs.
+GESTION DES IMAGES : utilise des photos Unsplash generiques adaptees au secteur : https://images.unsplash.com/photo-XXXXX?w=800&q=80. Le client pourra remplacer ces images par les siennes ensuite. Ne genere jamais d images IA personnalisees.
 
 REGLES ABSOLUES DE GENERATION :
 1. Genere UNIQUEMENT HTML plus CSS dans balise style. ZERO JavaScript complexe.
@@ -240,7 +243,7 @@ REGLES ABSOLUES DE GENERATION :
 5. Design moderne, animations CSS uniquement, responsive mobile.
 6. Un site COMPLET vaut mieux qu un site incomplet.
 
-REGLE CRITIQUE POUR LES MODIFICATIONS : Quand le client demande une modification sur un site deja genere (changer une couleur, traduire, ajouter une section...), tu DOIS reprendre EXACTEMENT le code precedent et appliquer UNIQUEMENT le changement demande. Si les images precedentes conviennent toujours, garde les memes GENERATED_IMAGE_n sans en regenerer, sauf si le client demande explicitement de changer les visuels. Ne supprime JAMAIS les images, sections, ou elements deja presents sauf si explicitement demande.
+REGLE CRITIQUE POUR LES MODIFICATIONS : Quand le client demande une modification sur un site deja genere (changer une couleur, traduire, ajouter une section...), tu DOIS reprendre EXACTEMENT le code precedent et appliquer UNIQUEMENT le changement demande. Ne supprime JAMAIS les sections ou elements deja presents sauf si explicitement demande.
 
 APRES AVOIR GENERE LE SITE, ajoute toujours ce message a la fin (hors des backticks) :
 
@@ -253,7 +256,7 @@ Votre site est pret ! Voici comment le deployer :
 4. Votre site sera en ligne en 30 secondes avec une URL gratuite
 5. Pour un nom de domaine personnalise (ex: votresite.fr) : achetez-le sur OVH ou Namecheap puis connectez-le dans Netlify
 
-Si vous souhaitez modifier des elements (couleurs, textes, photos), dites-le moi et je fais les changements immediatement !
+Si vous souhaitez remplacer les photos par les votres, envoyez-moi les liens et je les integre. Pour toute autre modification, dites-le moi et je fais les changements immediatement !
 ---`,
 
                       antoine: `Tu es Antoine, directeur artistique senior expert en branding, logos, flyers et creation visuelle.
