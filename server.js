@@ -50,19 +50,24 @@ app.post("/stripe-webhook", express.raw({ type: "application/json" }), async (re
 
     // Determine plan from amount paid - covers both monthly and yearly billing
     let plan = "pro";
-    if (amountTotal === 1990) plan = "starter";       // 19.90 EUR monthly
-    else if (amountTotal === 2990) plan = "pro";       // 29.90 EUR monthly
-    else if (amountTotal === 3990) plan = "unlimited"; // 39.90 EUR monthly
-    else if (amountTotal === 19104) plan = "starter";  // 191.04 EUR yearly
-    else if (amountTotal === 28704) plan = "pro";      // 287.04 EUR yearly
-    else if (amountTotal === 38304) plan = "unlimited";// 383.04 EUR yearly
+    let isYearly = false;
+    if (amountTotal === 1990) plan = "starter";
+    else if (amountTotal === 2990) plan = "pro";
+    else if (amountTotal === 3990) plan = "unlimited";
+    else if (amountTotal === 19104) { plan = "starter"; isYearly = true; }
+    else if (amountTotal === 28704) { plan = "pro"; isYearly = true; }
+    else if (amountTotal === 38304) { plan = "unlimited"; isYearly = true; }
+
+    const durationMs = isYearly ? 366 * 24 * 60 * 60 * 1000 : 31 * 24 * 60 * 60 * 1000; // 1 month or 1 year + 1 day buffer
+    const expiresAt = Date.now() + durationMs;
+    const subscriptionId = session.subscription || null;
 
     const token = crypto.randomBytes(24).toString("hex");
     const tokens = loadTokens();
-    tokens[token] = { plan, email, createdAt: Date.now() };
+    tokens[token] = { plan, email, createdAt: Date.now(), expiresAt, subscriptionId, active: true };
     saveTokens(tokens);
 
-    console.log("New token created for plan:", plan, "email:", email);
+    console.log("New token created for plan:", plan, "email:", email, "expires:", new Date(expiresAt).toISOString());
 
     const accessUrl = "https://boost-ai.fr/merci.html?token=" + token + "&plan=" + plan;
     console.log("Access URL:", accessUrl);
@@ -99,6 +104,25 @@ app.post("/stripe-webhook", express.raw({ type: "application/json" }), async (re
     }
   }
 
+  // Handle subscription cancellation: deactivate the matching token immediately
+  if (event.type === "customer.subscription.deleted") {
+    const subscription = event.data.object;
+    const subId = subscription.id;
+    console.log("Subscription cancelled:", subId);
+
+    const tokens = loadTokens();
+    let found = false;
+    for (const t in tokens) {
+      if (tokens[t].subscriptionId === subId) {
+        tokens[t].active = false;
+        found = true;
+        console.log("Token deactivated for cancelled subscription:", t.slice(0,8) + "...");
+      }
+    }
+    if (found) saveTokens(tokens);
+    else console.log("No matching token found for subscription:", subId);
+  }
+
   res.json({ received: true });
 });
 
@@ -118,13 +142,74 @@ function verifyStripeSignature(payload, sigHeader, secret) {
 app.get("/verify-token", (req, res) => {
   const { token } = req.query;
   const tokens = loadTokens();
-  if (!token || !tokens[token]) {
-    return res.status(404).json({ valid: false });
+  const entry = tokens[token];
+
+  if (!token || !entry) {
+    return res.status(404).json({ valid: false, reason: "not_found" });
   }
-  res.json({ valid: true, plan: tokens[token].plan, email: tokens[token].email });
+  if (!entry.active) {
+    return res.status(403).json({ valid: false, reason: "cancelled" });
+  }
+  if (entry.expiresAt && Date.now() > entry.expiresAt) {
+    return res.status(403).json({ valid: false, reason: "expired" });
+  }
+
+  res.json({ valid: true, plan: entry.plan, email: entry.email });
 });
 
 app.use(express.json({ limit: "10mb" }));
+
+const ANTOINE_LIMITS = { starter: 8, pro: 20, unlimited: 50 };
+
+function getMonthKey() {
+  const d = new Date();
+  return d.getFullYear() + "-" + (d.getMonth() + 1);
+}
+
+// Check current Antoine usage for a token, resetting automatically each month
+app.get("/antoine-usage", (req, res) => {
+  const { token } = req.query;
+  const tokens = loadTokens();
+  const entry = tokens[token];
+
+  if (!token || !entry || !entry.active) {
+    return res.status(404).json({ error: "invalid token" });
+  }
+
+  const mk = getMonthKey();
+  if (!entry.usage || entry.usage.month !== mk) {
+    entry.usage = { month: mk, count: 0 };
+    saveTokens(tokens);
+  }
+
+  const limit = ANTOINE_LIMITS[entry.plan] || ANTOINE_LIMITS.pro;
+  res.json({ count: entry.usage.count, limit, limitReached: entry.usage.count >= limit });
+});
+
+// Increment Antoine usage for a token (called after a successful new creation, not on iterations)
+app.post("/antoine-usage", (req, res) => {
+  const { token } = req.body;
+  const tokens = loadTokens();
+  const entry = tokens[token];
+
+  if (!token || !entry || !entry.active) {
+    return res.status(404).json({ error: "invalid token" });
+  }
+
+  const mk = getMonthKey();
+  if (!entry.usage || entry.usage.month !== mk) {
+    entry.usage = { month: mk, count: 0 };
+  }
+
+  const limit = ANTOINE_LIMITS[entry.plan] || ANTOINE_LIMITS.pro;
+  if (entry.usage.count >= limit) {
+    return res.status(403).json({ error: "limit_reached", count: entry.usage.count, limit });
+  }
+
+  entry.usage.count += 1;
+  saveTokens(tokens);
+  res.json({ count: entry.usage.count, limit, limitReached: entry.usage.count >= limit });
+});
 
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
