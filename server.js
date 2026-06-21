@@ -354,9 +354,15 @@ app.post("/chat", async (req, res) => {
     });
 
     const data = await response.json();
+    console.log("Anthropic API response status:", response.status);
+    if (!response.ok || data.type === "error") {
+      console.log("Anthropic API error:", JSON.stringify(data).slice(0, 500));
+      return res.status(response.status || 500).json({ error: data.error ? data.error.message : "Anthropic API error" });
+    }
     res.json(data);
 
   } catch (err) {
+    console.log("Chat endpoint error:", err.message);
     res.status(500).json({ error: err.message });
   }
 });
